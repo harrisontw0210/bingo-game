@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bingo 玩家</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 10px; background: #f0f2f5; }
+        .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        
+        .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; margin: 15px 0; }
+        .cell { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; 
+                border: 1px solid #ddd; font-size: 18px; border-radius: 4px; background: #fff; position: relative;}
+        .cell.marked { background-color: #f1c40f; color: #c0392b; border-color: #f39c12; font-weight: bold;}
+        
+        input.cell-input { width: 100%; height: 100%; border: none; text-align: center; font-size: 18px; padding: 0; box-sizing: border-box; outline: none; background: transparent; color: #2c3e50;}
+        
+        /* 按鈕群 */
+        .btn-group { display: flex; gap: 10px; margin-bottom: 10px; }
+        .btn { flex: 1; padding: 12px; font-size: 16px; cursor: pointer; border: none; border-radius: 5px; color: white; transition: 0.2s;}
+        
+        .btn-primary { background: #3498db; width: 100%; margin-top: 10px; font-size: 18px; }
+        .btn-random { background: #9b59b6; }
+        .btn-clear { background: #95a5a6; }
+        
+        #status { font-weight: bold; color: #27ae60; margin-top: 10px; font-size: 20px;}
+        #last-drawn { font-size: 14px; color: #7f8c8d; margin-bottom: 10px; }
+        .rules { font-size: 12px; color: #666; margin-bottom: 10px; text-align: left; background: #eee; padding: 8px; border-radius: 4px;}
+        .win-msg { color: #d35400; font-size: 24px; font-weight: bold; animation: pop 0.5s;}
+        
+        @keyframes pop { 0% { transform: scale(0.5); } 100% { transform: scale(1); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="login-view">
+            <h2>加入 Bingo 遊戲</h2>
+            <input type="text" id="username" placeholder="輸入你的暱稱" style="padding:10px; font-size:16px; width:80%; margin-bottom:10px;">
+            <button class="btn btn-primary" onclick="joinGame()">加入</button>
+        </div>
+
+        <div id="game-view" style="display:none;">
+            <h3 id="display-name" style="margin:0;"></h3>
+            <div id="status-bar" style="font-size:14px; color:#e74c3c; font-weight:bold;">目標: 先達成 3 條線獲勝!</div>
+            <div id="last-drawn">等待開獎...</div>
+            
+            <div id="setup-controls">
+                <div class="rules">
+                    請填滿 1~25 的數字 (不可重複)。<br>
+                    您可以「手動輸入」或使用「隨機產生」。
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-random" onclick="autoFill()">🎲 隨機產生</button>
+                    <button class="btn btn-clear" onclick="clearGrid()">🗑️ 清空重填</button>
+                </div>
+            </div>
+
+            <div class="grid" id="grid"></div>
+            
+            <button class="btn btn-primary" id="submit-btn" onclick="submitCard()">🔒 鎖定並送出</button>
+            <div id="status">準備中...</div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let card = new Array(25).fill(null);
+        let isPlaying = false;
+        let hasWon = false;
+        const grid = document.getElementById('grid');
+        const WIN_LINES = 3; // 前端判定標準
+
+        // 初始化格子
+        function initGrid() {
+            grid.innerHTML = '';
+            for(let i=0; i<25; i++) {
+                let div = document.createElement('div');
+                div.className = 'cell';
+                let input = document.createElement('input');
+                input.type = 'number';
+                input.className = 'cell-input';
+                input.placeholder = "-";
+                // 限制輸入範圍 1-25
+                input.oninput = (e) => {
+                    let v = parseInt(e.target.value);
+                    if(v > 25) e.target.value = 25;
+                    if(v < 1 && e.target.value !== "") e.target.value = 1;
+                };
+                div.appendChild(input);
+                grid.appendChild(div);
+            }
+        }
+        initGrid();
+
+        function joinGame() {
+            const name = document.getElementById('username').value;
+            if(!name) return alert("請輸入名字");
+            socket.emit('join_game', {name: name});
+            document.getElementById('login-view').style.display = 'none';
+            document.getElementById('game-view').style.display = 'block';
+            document.getElementById('display-name').innerText = name;
+            autoFill(); // 預設隨機填寫
+        }
+
+        function autoFill() {
+            if(isPlaying) return;
+            let nums = Array.from({length: 25}, (_, k) => k + 1);
+            nums.sort(() => Math.random() - 0.5);
+            
+            const inputs = document.querySelectorAll('.cell-input');
+            inputs.forEach((inp, idx) => {
+                inp.value = nums[idx];
+            });
+        }
+
+        function clearGrid() {
+            if(isPlaying) return;
+            const inputs = document.querySelectorAll('.cell-input');
+            inputs.forEach(inp => inp.value = "");
+        }
+
+        function submitCard() {
+            const inputs = document.querySelectorAll('.cell-input');
+            let tempCard = [];
+            let checkSet = new Set();
+
+            // 防呆驗證
+            for(let i=0; i<inputs.length; i++) {
+                let val = parseInt(inputs[i].value);
+                if(isNaN(val)) return alert("還有格子沒填喔！");
+                if(val < 1 || val > 25) return alert("數字必須在 1 到 25 之間！");
+                if(checkSet.has(val)) return alert(`數字 ${val} 重複了！請檢查。`);
+                
+                checkSet.add(val);
+                tempCard.push(val);
+            }
+
+            // 通過驗證
+            card = tempCard;
+            socket.emit('submit_card', card);
+            isPlaying = true;
+            document.getElementById('submit-btn').style.display = 'none';
+            document.getElementById('setup-controls').style.display = 'none';
+            document.getElementById('status').innerText = "已送出！等待開獎...";
+
+            // 鎖定畫面
+            const cells = document.querySelectorAll('.cell');
+            cells.forEach((div, idx) => {
+                div.innerHTML = card[idx];
+                div.id = `num-${card[idx]}`;
+            });
+        }
+
+        socket.on('number_drawn', (num) => {
+            document.getElementById('last-drawn').innerText = `最新號碼: ${num}`;
+            if(!isPlaying) return;
+            markNumber(num);
+        });
+        
+        socket.on('sync_drawn_numbers', (nums) => {
+            if(!isPlaying) return;
+            nums.forEach(num => markNumber(num));
+        });
+
+        function markNumber(num) {
+            const target = document.getElementById(`num-${num}`);
+            if(target) {
+                target.classList.add('marked');
+                checkLines();
+            }
+        }
+
+        function checkLines() {
+            const cells = document.querySelectorAll('.cell');
+            const markedIdx = [];
+            cells.forEach((c, i) => { if(c.classList.contains('marked')) markedIdx.push(i); });
+
+            // 5x5 的連線組合
+            const wins = [
+                [0,1,2,3,4], [5,6,7,8,9], [10,11,12,13,14], [15,16,17,18,19], [20,21,22,23,24], // 橫
+                [0,5,10,15,20], [1,6,11,16,21], [2,7,12,17,22], [3,8,13,18,23], [4,9,14,19,24], // 直
+                [0,6,12,18,24], [4,8,12,16,20] // 斜
+            ];
+
+            let lines = 0;
+            wins.forEach(line => {
+                if(line.every(idx => markedIdx.includes(idx))) lines++;
+            });
+
+            document.getElementById('status').innerText = `目前連線: ${lines}`;
+            socket.emit('report_status', { lines: lines, marked: markedIdx });
+            
+            if(lines >= WIN_LINES && !hasWon) {
+                hasWon = true;
+                alert(`🎉 太神啦！你達成 ${lines} 條線獲勝了！`);
+                document.getElementById('status').innerHTML = "<span class='win-msg'>👑 獲勝 👑</span>";
+            }
+        }
+
+        socket.on('reset_game', () => location.reload());
+    </script>
+</body>
+</html>

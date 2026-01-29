@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bingo 主控台</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; padding: 20px; background: #2c3e50; color: white; }
+        
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #444; padding-bottom: 20px; }
+        .setup-area { display: flex; align-items: center; gap: 10px; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;}
+        input[type="number"] { padding: 8px; width: 60px; font-size: 16px; border-radius: 4px; border: none;}
+        
+        .controls button { padding: 12px 25px; font-size: 18px; cursor: pointer; border: none; border-radius: 5px; margin-left: 5px;}
+        .btn-set { background: #3498db; color: white; }
+        .btn-draw { background: #e74c3c; color: white; font-weight: bold; font-size: 22px; padding: 15px 40px;}
+        .btn-reset { background: #95a5a6; color: white; }
+        
+        #main-area { display: flex; justify-content: space-around; align-items: center; margin: 20px 0; background: #34495e; padding: 20px; border-radius: 10px;}
+        #current-number { font-size: 100px; font-weight: bold; color: #f1c40f; min-width: 150px; text-align: center;}
+        #qr-box { background: white; padding: 10px; border-radius: 10px; color: black; text-align: center;}
+        #status-stats { text-align: left; font-size: 20px; line-height: 1.6; }
+        
+        #history { color: #bdc3c7; font-size: 16px; margin: 10px 0; text-align: center; min-height: 24px;}
+        
+        .dashboard { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 15px; margin-top: 20px;}
+        .player-card { background: #444; padding: 10px; border-radius: 8px; text-align: center; position: relative; border-top: 5px solid #777;}
+        
+        .player-card.ready { border-top-color: #2ecc71; background: #2c3e50; }
+        .player-card.playing { border-top-color: #f1c40f; }
+        /* 獲勝樣式 */
+        .player-card.winning { border-top-color: #ff0000; background: #c0392b; box-shadow: 0 0 15px #e74c3c; transform: scale(1.05); } 
+        
+        .player-name { font-size: 18px; font-weight: bold; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+        .player-status { font-size: 14px; color: #aaa; }
+        .lines-cnt { font-size: 28px; font-weight: bold; color: white; }
+        .winner-badge { color: yellow; font-weight: bold; display: none; margin-top:5px;}
+        .player-card.winning .winner-badge { display: block; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="setup-area">
+            <span>預計人數:</span>
+            <input type="number" id="target-count" value="50">
+            <button class="btn-set" onclick="setTarget()">設定</button>
+        </div>
+        
+        <div class="controls">
+            <button class="btn-reset" onclick="resetGame()">重置</button>
+            <button class="btn-draw" onclick="drawNumber()">🎁 開獎</button>
+        </div>
+    </header>
+
+    <div id="main-area">
+        <div id="qr-box">
+            <img id="qr-img" width="120">
+            <div style="font-size:12px; font-weight:bold;">掃碼加入</div>
+        </div>
+        <div>
+            <div style="font-size: 14px; color: #aaa;">本期號碼</div>
+            <div id="current-number">--</div>
+        </div>
+        <div id="status-stats">
+            <div>🎯 目標: <span id="val-target">0</span> 人</div>
+            <div>👤 線上: <span id="val-online">0</span> 人</div>
+            <div>🏆 規則: <span style="color:#f1c40f">3 條線獲勝</span></div>
+        </div>
+    </div>
+
+    <div id="history">尚未開出號碼</div>
+    <div class="dashboard" id="dashboard"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let gameStarted = false;
+        let winLimit = 3; 
+
+        fetch('/get_qr').then(r => r.json()).then(data => {
+            document.getElementById('qr-img').src = data.qr_image;
+        });
+
+        function setTarget() {
+            const count = document.getElementById('target-count').value;
+            socket.emit('set_target', count);
+            alert("已更新目標人數");
+        }
+
+        function drawNumber() {
+            gameStarted = true;
+            socket.emit('host_draw_number');
+        }
+
+        function resetGame() { 
+            if(confirm("⚠ 確定重置遊戲？所有玩家的卡片和紀錄將清空。")) {
+                gameStarted = false;
+                socket.emit('host_reset'); 
+                document.getElementById('history').innerText = "";
+                document.getElementById('current-number').innerText = "--";
+            }
+        }
+
+        socket.on('number_drawn', (num) => {
+            gameStarted = true;
+            document.getElementById('current-number').innerText = num;
+            let hist = document.getElementById('history');
+            if(hist.innerText.includes("尚未")) hist.innerText = "";
+            hist.innerText = (hist.innerText ? hist.innerText + ", " : "") + num;
+        });
+
+        socket.on('game_winner', (name) => {
+            alert(`🎉 恭喜 ${name} 率先達成 ${winLimit} 條線獲勝！`);
+        });
+
+        socket.on('reset_game', () => location.reload());
+
+        socket.on('update_dashboard', (data) => {
+            const players = data.players;
+            winLimit = data.win_limit;
+            const board = document.getElementById('dashboard');
+            
+            document.getElementById('val-target').innerText = data.target;
+            document.getElementById('val-online').innerText = Object.keys(players).length;
+
+            board.innerHTML = '';
+            
+            // 排序：已獲勝 > 連線數多 > 準備好
+            Object.values(players)
+                .sort((a, b) => {
+                    if (b.lines !== a.lines) return b.lines - a.lines;
+                    return (b.is_ready === a.is_ready) ? 0 : b.is_ready ? 1 : -1;
+                })
+                .forEach(p => {
+                    const div = document.createElement('div');
+                    let statusClass = '';
+                    let statusText = '';
+                    let mainContent = '';
+
+                    if (!p.is_ready) {
+                        statusClass = ''; 
+                        statusText = '填寫中...';
+                        mainContent = '<div style="font-size:30px; color:#777;">...</div>';
+                    } else if (!gameStarted && p.lines === 0) {
+                        statusClass = 'ready'; 
+                        statusText = '準備完成';
+                        mainContent = '<div style="font-size:30px;">OK</div>';
+                    } else {
+                        // 判斷是否獲勝
+                        if (p.lines >= winLimit) {
+                            statusClass = 'winning';
+                            statusText = 'WINNER!';
+                        } else {
+                            statusClass = 'playing';
+                            statusText = `連線數`;
+                        }
+                        mainContent = `<div class="lines-cnt">${p.lines}</div>`;
+                    }
+
+                    div.className = `player-card ${statusClass}`;
+                    div.innerHTML = `
+                        <div class="player-name">${p.name}</div>
+                        ${mainContent}
+                        <div class="winner-badge">🏆 獲勝</div>
+                        <div class="player-status">${statusText}</div>
+                    `;
+                    board.appendChild(div);
+                });
+        });
+    </script>
+</body>
+</html>
