@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bingo 玩家</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 10px; background: #f0f2f5; }
+        .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; margin: 15px 0; }
+        .cell { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; 
+                border: 1px solid #ddd; font-size: 18px; border-radius: 4px; background: #fff; font-weight: bold;}
+        .cell.marked { background-color: #f1c40f; color: #c0392b; border-color: #f39c12; }
+        input.cell-input { width: 100%; height: 100%; border: none; text-align: center; font-size: 18px; padding: 0; box-sizing: border-box;}
+        .btn { width: 100%; padding: 12px; font-size: 18px; margin-top: 10px; cursor: pointer; 
+               background: #3498db; color: white; border: none; border-radius: 5px; }
+        .btn.secondary { background: #95a5a6; }
+        #status { font-weight: bold; color: #27ae60; margin-top: 10px; font-size: 20px;}
+        #last-drawn { font-size: 14px; color: #7f8c8d; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="login-view">
+            <h2>加入 Bingo 遊戲</h2>
+            <input type="text" id="username" placeholder="輸入你的暱稱" style="padding:10px; font-size:16px; width:80%; margin-bottom:10px;">
+            <button class="btn" onclick="joinGame()">加入</button>
+        </div>
+
+        <div id="game-view" style="display:none;">
+            <h3 id="display-name" style="margin:0;"></h3>
+            <div id="last-drawn">等待開獎...</div>
+            
+            <div id="setup-controls">
+                <p>請點擊下方按鈕隨機產生 1-25</p>
+                <button class="btn secondary" onclick="autoFill()" style="margin-bottom:10px;">🎲 隨機排列 1-25</button>
+            </div>
+
+            <div class="grid" id="grid"></div>
+            
+            <button class="btn" id="submit-btn" onclick="submitCard()">🔒 鎖定並送出</button>
+            <div id="status">目前連線: 0</div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let card = new Array(25).fill(null);
+        let isPlaying = false;
+        const grid = document.getElementById('grid');
+
+        // 初始化格子
+        for(let i=0; i<25; i++) {
+            let div = document.createElement('div');
+            div.className = 'cell';
+            let input = document.createElement('input');
+            input.type = 'number';
+            input.className = 'cell-input';
+            input.readOnly = true;
+            input.placeholder = "?";
+            div.appendChild(input);
+            grid.appendChild(div);
+        }
+
+        function joinGame() {
+            const name = document.getElementById('username').value;
+            if(!name) return alert("請輸入名字");
+            socket.emit('join_game', {name: name});
+            document.getElementById('login-view').style.display = 'none';
+            document.getElementById('game-view').style.display = 'block';
+            document.getElementById('display-name').innerText = name;
+            autoFill(); // 自動隨機
+        }
+
+        function autoFill() {
+            if(isPlaying) return;
+            let nums = Array.from({length: 25}, (_, k) => k + 1);
+            nums.sort(() => Math.random() - 0.5);
+            
+            const inputs = document.querySelectorAll('.cell-input');
+            inputs.forEach((inp, idx) => {
+                inp.value = nums[idx];
+                card[idx] = nums[idx];
+            });
+        }
+
+        function submitCard() {
+            if(card.some(n => !n)) return alert("請先產生數字");
+            socket.emit('submit_card', card);
+            isPlaying = true;
+            document.getElementById('submit-btn').style.display = 'none';
+            document.getElementById('setup-controls').style.display = 'none';
+
+            const cells = document.querySelectorAll('.cell');
+            cells.forEach((div, idx) => {
+                div.innerHTML = card[idx];
+                div.id = `num-${card[idx]}`;
+            });
+        }
+
+        socket.on('number_drawn', (num) => {
+            document.getElementById('last-drawn').innerText = `最新號碼: ${num}`;
+            if(!isPlaying) return;
+            markNumber(num);
+        });
+        
+        socket.on('sync_drawn_numbers', (nums) => {
+            if(!isPlaying) return;
+            nums.forEach(num => markNumber(num));
+        });
+
+        function markNumber(num) {
+            const target = document.getElementById(`num-${num}`);
+            if(target) {
+                target.classList.add('marked');
+                checkLines();
+            }
+        }
+
+        function checkLines() {
+            const cells = document.querySelectorAll('.cell');
+            const markedIdx = [];
+            cells.forEach((c, i) => { if(c.classList.contains('marked')) markedIdx.push(i); });
+
+            const wins = [
+                [0,1,2,3,4], [5,6,7,8,9], [10,11,12,13,14], [15,16,17,18,19], [20,21,22,23,24],
+                [0,5,10,15,20], [1,6,11,16,21], [2,7,12,17,22], [3,8,13,18,23], [4,9,14,19,24],
+                [0,6,12,18,24], [4,8,12,16,20]
+            ];
+
+            let lines = 0;
+            wins.forEach(line => {
+                if(line.every(idx => markedIdx.includes(idx))) lines++;
+            });
+
+            document.getElementById('status').innerText = `目前連線: ${lines}`;
+            socket.emit('report_status', { lines: lines, marked: markedIdx });
+            
+            if(lines >= 5) alert("🎉 BINGO! 你贏了!");
+        }
+
+        socket.on('reset_game', () => location.reload());
+    </script>
+</body>
+</html>
